@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>论文研究 Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    /* ── 对话气泡 ──────────────────────────────── */
+    .bubble-user  { background:#3b82f6; color:white;   border-radius:18px 18px 4px 18px; }
+    .bubble-agent { background:#f3f4f6; color:#111827; border-radius:18px 18px 18px 4px; }
+
+    /* ── Markdown 表格 ──────────────────────────── */
+    .prose table  { border-collapse:collapse; width:100%; }
+    .prose th,.prose td { border:1px solid #d1d5db; padding:8px 12px; }
+    .prose th     { background:#f9fafb; font-weight:600; }
+    .prose code   { background:#f3f4f6; padding:2px 6px; border-radius:4px; font-size:12px; }
+
+    /* ── 加载动画 ────────────────────────────────── */
+    .dot-flashing { animation:dotFlash 1s infinite linear alternate; }
+    @keyframes dotFlash { 0%{opacity:.2} 100%{opacity:1} }
+
+    /* ── Extract 结果卡片 ────────────────────────── */
+    .extract-card  { display:flex; flex-direction:column; gap:8px; }
+    .extract-field { border-left:3px solid; padding:8px 12px; border-radius:0 8px 8px 0; }
+    .extract-label { font-size:11px; font-weight:700; margin-bottom:4px; }
+    .extract-value { font-size:12.5px; line-height:1.6; color:#1f2937; white-space:pre-wrap; }
+
+    /* ── 论文列表 hover 显示删除 ─────────────────── */
+    .paper-row .del-btn { opacity:0; transition:opacity .15s; }
+    .paper-row:hover .del-btn { opacity:1; }
+
+    /* ── 工作区 chip ─────────────────────────────── */
+    .ws-chip { display:flex;align-items:center;gap:4px;
+               background:#eff6ff;border:1px solid #bfdbfe;
+               border-radius:6px;padding:3px 8px;font-size:11px; }
+
+    /* ── Plan Mode ───────────────────────────────── */
+    .plan-pending .pi-icon { color:#d1d5db; }
+    .plan-pending .pi-text { color:#9ca3af; }
+
+    .plan-active  { background:#eff6ff; padding:5px 8px; margin:0 -8px; border-radius:6px; }
+    .plan-active  .pi-icon { color:#3b82f6; display:inline-block;
+                              animation:planSpin 1.2s linear infinite; }
+    .plan-active  .pi-text { color:#1d4ed8; font-weight:600; }
+    @keyframes planSpin { 100%{ transform:rotate(360deg); } }
+
+    .plan-done .pi-icon { color:#22c55e; }
+    .plan-done .pi-text { color:#9ca3af; text-decoration:line-through; }
+
+    .plan-bar { height:3px; background:#e5e7eb; border-radius:9999px; overflow:hidden; margin-top:12px; }
+    .plan-bar-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#6366f1);
+                     border-radius:9999px; transition:width .4s ease; }
+
+    /* ── 右侧面板 Tab ────────────────────────────── */
+    .tab-btn { flex:1; padding:10px 4px; font-size:11px; font-weight:500;
+               border-bottom:2px solid transparent; color:#9ca3af;
+               transition:color .15s, border-color .15s; cursor:pointer;
+               background:none; border-top:none; border-left:none; border-right:none; }
+    .tab-btn:hover  { color:#6b7280; }
+    .tab-btn.active { color:#1d4ed8; border-bottom-color:#3b82f6; font-weight:600; }
+
+    /* ── 报告草稿徽章抖动 ────────────────────────── */
+    @keyframes badgePop { 0%,100%{transform:scale(1)} 40%{transform:scale(1.5)} }
+    .badge-pop { animation:badgePop .35s ease-out; }
+
+    /* ── 报告条目 ────────────────────────────────── */
+    .report-item { border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px;
+                   margin-bottom:6px; transition:opacity .2s; }
+    .report-item.excluded { opacity:.45; }
+
+    /* ── 历史对话条目 ────────────────────────────── */
+    .conv-item { display:flex; align-items:center; gap:4px;
+                 padding:5px 8px; border-radius:8px; cursor:pointer;
+                 transition:background .12s; }
+    .conv-item:hover { background:#f3f4f6; }
+    .conv-item.active { background:#eff6ff; border:1px solid #bfdbfe; }
+    .conv-item .del-conv { opacity:0; transition:opacity .12s; }
+    .conv-item:hover .del-conv { opacity:1; }
+
+    /* ── LLM 配置面板条目 ────────────────────────────── */
+    .config-item .del-cfg { opacity:0; transition:opacity .12s; }
+    .config-item:hover .del-cfg { opacity:1; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+<!-- ── 顶部导航 ─────────────────────────────────────── -->
+<nav class="bg-white shadow-sm border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-2">
+    <span class="text-2xl">📄</span>
+    <span class="text-lg font-bold text-gray-800">论文研究 Agent</span>
+  </div>
+  <button onclick="toggleSettings()"
+    class="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 border border-gray-300 rounded-lg px-3 py-1.5 hover:bg-gray-50">
+    ⚙️ 设置 API Key
+  </button>
+</nav>
+
+<!-- ── 设置面板 ──────────────────────────────────────── -->
+<div id="settings-panel" class="hidden bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
+  <div class="max-w-2xl mx-auto">
+    <h3 class="text-sm font-semibold text-gray-700 mb-3">API Key 配置</h3>
+
+    <!-- 已保存配置选择 -->
+    <div class="mb-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+      <label class="text-xs font-semibold text-gray-600 mb-2 block">已保存配置</label>
+      <div class="flex gap-2">
+        <select id="saved-config-select" onchange="loadSavedConfig()"
+          class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+          <option value="">── 选择配置加载 ──</option>
+        </select>
+        <button onclick="deleteSavedConfig()"
+          class="text-red-400 hover:text-red-600 border border-gray-300 rounded-lg px-2.5 text-sm hover:bg-red-50 transition">
+          删除
+        </button>
+      </div>
+      <p class="text-xs text-gray-400 mt-1.5">配置保存在浏览器本地（localStorage），刷新不丢失</p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-3">
+      <div>
+        <label class="text-xs text-gray-500 mb-1 block">LLM 提供商</label>
+        <select id="llm-provider" onchange="onProviderChange()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="custom">OpenAI 兼容中转站</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+        </select>
+      </div>
+      <div id="base-url-row" class="hidden">
+        <label class="text-xs text-gray-500 mb-1 block">Base URL</label>
+        <input id="llm-base-url" type="text" placeholder="https://your-proxy.com/v1" autocomplete="off"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 mb-1 block">API Key</label>
+        <input id="llm-api-key" type="password" placeholder="sk-..." autocomplete="off"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <label class="text-xs text-gray-500">模型</label>
+          <button onclick="fetchModels()" class="text-xs text-blue-600 border border-blue-300 rounded px-2 py-0.5 hover:bg-blue-50">↻ 拉取列表</button>
+        </div>
+        <input id="llm-model-input" type="text" placeholder="手动输入或点击拉取" autocomplete="off"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <select id="llm-model-select" onchange="document.getElementById('llm-model-input').value=this.value"
+          class="hidden w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1">
+        </select>
+        <span id="model-fetch-status" class="text-xs text-gray-400 mt-1 block"></span>
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 mb-1 block">Tavily API Key（可选，用于网络搜索）</label>
+        <input id="tavily-api-key" type="password" placeholder="tvly-..." autocomplete="off"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+    </div>
+
+    <!-- 操作按钮行 -->
+    <div class="flex gap-2 mt-3 flex-wrap items-center">
+      <button onclick="saveConfig()"
+        class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 font-medium">
+        保存
+      </button>
+      <button onclick="testConnection()"
+        class="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-200 border border-gray-300 font-medium">
+        🔗 测试连接
+      </button>
+      <span id="config-status" class="text-sm text-gray-500 self-center"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── 主体三栏 ───────────────────────────────────────── -->
+<div class="max-w-screen-xl mx-auto px-4 py-5 flex gap-4">
+
+  <!-- ◀ 左栏：历史对话 + 论文管理 ────────────────────── -->
+  <aside class="w-52 flex-shrink-0 space-y-3">
+
+    <!-- 历史对话 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold text-gray-600">💬 历史对话</h2>
+        <button onclick="newConversation()"
+          class="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-1.5 py-0.5 hover:bg-blue-50 transition font-medium">
+          + 新对话
+        </button>
+      </div>
+      <ul id="conv-history-list" class="space-y-0.5">
+        <li class="text-xs text-gray-400 text-center py-2">暂无历史</li>
+      </ul>
+    </div>
+
+    <!-- LLM 配置快速切换 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold text-gray-600">🔧 LLM 配置</h2>
+        <button onclick="toggleSettings()"
+          class="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-1.5 py-0.5 hover:bg-blue-50 transition font-medium">
+          + 新增
+        </button>
+      </div>
+      <!-- 切换反馈（2 秒后自动消失） -->
+      <p id="config-panel-status" class="hidden text-xs text-green-600 mb-1.5"></p>
+      <ul id="config-panel-list" class="space-y-0.5">
+        <li class="text-xs text-gray-400 text-center py-2">暂无配置<br>点击"+ 新增"保存</li>
+      </ul>
+    </div>
+
+    <!-- 暂存区 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
+      <h2 class="text-xs font-semibold text-gray-600 mb-2">📚 论文暂存区</h2>
+      <label class="block border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition">
+        <input id="file-input" type="file" accept=".pdf" multiple class="hidden" onchange="uploadFiles(this)" />
+        <div class="text-xl mb-0.5">⬆️</div>
+        <div class="text-xs text-gray-500">点击或拖拽上传 PDF</div>
+      </label>
+      <ul id="paper-list" class="mt-2 space-y-0.5"></ul>
+    </div>
+
+    <!-- 工作区（有勾选时显示） -->
+    <div id="workspace-section" class="hidden bg-white rounded-xl shadow-sm border border-blue-200 p-3">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-semibold text-blue-700">
+          📋 工作区
+          <span id="workspace-badge" class="ml-1 bg-blue-100 text-blue-700 rounded-full px-1.5 text-xs font-bold">0</span>
+        </span>
+        <button onclick="clearWorkspace()" class="text-xs text-gray-400 hover:text-red-400">清空</button>
+      </div>
+      <ul id="workspace-list" class="space-y-1 mb-2"></ul>
+      <div class="flex gap-1">
+        <button onclick="quickAction('compare')"
+          class="flex-1 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg px-1.5 py-1.5 font-medium">
+          📊 对比
+        </button>
+        <button onclick="quickAction('gap')"
+          class="flex-1 text-xs bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg px-1.5 py-1.5 font-medium">
+          🔭 缺口
+        </button>
+      </div>
+    </div>
+
+    <!-- 快捷操作 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
+      <h2 class="text-xs font-semibold text-gray-600 mb-1">⚡ 快捷操作</h2>
+      <p class="text-xs text-gray-400 mb-2">针对当前选中论文</p>
+      <div class="space-y-1.5">
+        <button onclick="quickAction('extract')"
+          class="w-full text-left text-xs bg-gray-50 hover:bg-blue-50 border border-gray-200 rounded-lg px-2.5 py-2">
+          🔍 提取关键信息
+        </button>
+        <button onclick="quickAction('summary')"
+          class="w-full text-left text-xs bg-gray-50 hover:bg-blue-50 border border-gray-200 rounded-lg px-2.5 py-2">
+          📝 生成摘要
+        </button>
+        <button onclick="quickAction('citation')"
+          class="w-full text-left text-xs bg-gray-50 hover:bg-blue-50 border border-gray-200 rounded-lg px-2.5 py-2">
+          📖 提取参考文献
+        </button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ▶ 中栏：对话区 ───────────────────────────────── -->
+  <main class="flex-1 min-w-0">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col" style="height:calc(100vh - 108px)">
+
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
+        <span class="text-sm font-medium text-gray-700">
+          <span id="conv-title-display" class="text-gray-600">新对话</span>
+          <span id="active-paper-label" class="ml-2 text-xs text-blue-500 font-normal"></span>
+        </span>
+        <button onclick="newConversation()"
+          class="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg px-2.5 py-1 hover:bg-blue-50 transition font-medium">
+          ✨ 新对话
+        </button>
+      </div>
+
+      <div id="messages" class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <!-- 欢迎消息由 JS 渲染 -->
+      </div>
+
+      <div class="border-t border-gray-100 px-4 py-3 flex gap-2">
+        <input id="chat-input" type="text" placeholder="问我任何关于论文的问题..."
+          class="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onkeydown="if(event.key==='Enter') sendMessage()" />
+        <button onclick="sendMessage()"
+          class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 font-medium">
+          发送
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ▶ 右栏：执行计划 + 报告草稿 ─────────────────── -->
+  <div class="w-72 flex-shrink-0">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col sticky top-4"
+         style="max-height:calc(100vh - 88px)">
+
+      <!-- Tab 切换栏 -->
+      <div class="flex border-b border-gray-100 flex-shrink-0">
+        <button id="tab-btn-plan"   onclick="switchTab('plan')"   class="tab-btn active">⚡ 执行计划</button>
+        <button id="tab-btn-report" onclick="switchTab('report')" class="tab-btn">
+          📄 报告草稿
+          <span id="report-count"
+            class="hidden ml-1 bg-blue-100 text-blue-700 rounded-full px-1.5 py-0.5 text-xs font-bold leading-none">0</span>
+        </button>
+      </div>
+
+      <!-- ── Plan Tab ─────────────────────────── -->
+      <div id="plan-tab-content" class="flex flex-col flex-1 overflow-y-auto">
+
+        <!-- 状态行 -->
+        <div class="flex items-center justify-between px-4 py-2 border-b border-gray-50">
+          <span class="text-xs text-gray-400">任务进度</span>
+          <span id="plan-status-badge"
+            class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">待机</span>
+        </div>
+
+        <!-- 任务标签（有任务时显示） -->
+        <div id="plan-task-header" class="hidden px-4 pt-3 pb-1">
+          <div id="plan-task-label" class="text-xs font-semibold text-gray-700"></div>
+          <div id="plan-task-sub"   class="text-xs text-gray-400 truncate mt-0.5"></div>
+          <div class="mt-2 border-t border-gray-100"></div>
+        </div>
+
+        <!-- 计划条目（由 JS 渲染） -->
+        <div id="plan-panel-body" class="px-4 py-3">
+          <div class="text-center py-8">
+            <div class="text-3xl mb-3">🗒️</div>
+            <div class="text-xs text-gray-400 leading-relaxed">
+              执行操作后<br>这里展示 Agent<br>的思考与进度
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Report Tab ────────────────────────── -->
+      <div id="report-tab-content" class="hidden flex-col flex-1 overflow-y-auto">
+        <!-- 由 JS renderReportDraft() 完整渲染 -->
+      </div>
+
+    </div>
+  </div><!-- /右栏 -->
+
+</div><!-- /主体 -->
+
+<script src="/static/app.js?v=017"></script>
+</body>
+</html>
