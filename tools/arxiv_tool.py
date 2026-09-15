@@ -9,6 +9,8 @@ LangChain Tool：根据关键词在 ArXiv 上搜索相关论文。
 import arxiv
 from langchain.tools import tool
 
+from tools.errors import log_tool_failure
+
 
 @tool
 def arxiv_tool(query: str) -> str:
@@ -50,4 +52,5 @@ def arxiv_tool(query: str) -> str:
         return "\n---\n".join(papers)
 
     except Exception as e:
-        return f"ArXiv 搜索失败：{str(e)}"
+        # 网络/解析等系统故障：记完整日志，返回可读提示让 Agent 如实转告用户
+        return log_tool_failure("arxiv_tool", e)

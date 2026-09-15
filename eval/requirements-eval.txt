@@ -1,0 +1,3 @@
+# 检索评测专用依赖（不进主 requirements.txt，避免给运行时增负）
+# 用于 eval/retrieval_eval.py：本地 embedding 离线跑 QASPER 召回率
+sentence-transformers==2.7.0

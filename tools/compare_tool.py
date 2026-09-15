@@ -11,6 +11,7 @@ from langchain.tools import tool
 from config import get_llm
 from prompts.compare_prompt import COMPARE_PROMPT
 from tools.extract_tool import paper_texts
+from tools.errors import tool_error_guard
 
 
 @tool
@@ -43,11 +44,9 @@ def compare_tool(paper_ids: str) -> str:
     llm = get_llm()
     chain = COMPARE_PROMPT | llm
 
-    try:
+    with tool_error_guard("compare_tool"):
         result = chain.invoke({
             "paper_count": len(ids),
             "papers_info": papers_info,
         })
         return result.content
-    except Exception as e:
-        return f"对比失败：{str(e)}"

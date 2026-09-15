@@ -5,11 +5,16 @@ config.py — 全局配置与 API Key 管理
 _current_session ContextVar 由 main.py 中的 HTTP 中间件在每次请求开始时写入，
 所有工具函数、Memory、LLM 实例均通过 _get_cfg() 读取当前会话的配置，
 实现多用户隔离（部署到公网后每个浏览器 tab 拥有独立的密钥与论文列表）。
+
+会话配置存放在带 TTL 的缓存中（见 session_store），闲置超时后自动淘汰，
+避免长期运行时内存无上限增长。
 """
 
 import os
 from contextvars import ContextVar
 from dotenv import load_dotenv
+
+from session_store import STORE_LOCK, new_session_cache, touch
 
 load_dotenv()
 
@@ -18,21 +23,24 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 # 当前请求的会话 ID；由 main.py 中间件在每次请求开始时写入
 _current_session: ContextVar[str] = ContextVar("current_session", default="__default__")
 
-# 每个会话独立的配置字典
-_sessions_config: dict = {}
+# 每个会话独立的配置；带闲置过期与容量上限，跨线程访问由 STORE_LOCK 保护
+_sessions_config = new_session_cache()
 
 
 def _get_cfg() -> dict:
     sid = _current_session.get()
-    if sid not in _sessions_config:
-        _sessions_config[sid] = {
-            "llm_provider":   os.getenv("LLM_PROVIDER", "openai"),
-            "llm_api_key":    os.getenv("OPENAI_API_KEY", ""),
-            "llm_base_url":   os.getenv("LLM_BASE_URL", ""),
-            "llm_model":      os.getenv("LLM_MODEL", ""),
-            "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
-        }
-    return _sessions_config[sid]
+    with STORE_LOCK:
+        cfg = touch(_sessions_config, sid)
+        if cfg is None:
+            cfg = {
+                "llm_provider":   os.getenv("LLM_PROVIDER", "openai"),
+                "llm_api_key":    os.getenv("OPENAI_API_KEY", ""),
+                "llm_base_url":   os.getenv("LLM_BASE_URL", ""),
+                "llm_model":      os.getenv("LLM_MODEL", ""),
+                "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
+            }
+            _sessions_config[sid] = cfg
+        return cfg
 
 
 class _SessionProxy:

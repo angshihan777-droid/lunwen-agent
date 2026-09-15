@@ -10,6 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from config import get_llm
 from tools.extract_tool import paper_texts
+from tools.errors import tool_error_guard
 
 CITATION_PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -47,8 +48,6 @@ def citation_tool(paper_id: str) -> str:
     llm = get_llm()
     chain = CITATION_PROMPT | llm
 
-    try:
+    with tool_error_guard("citation_tool"):
         result = chain.invoke({"paper_tail": paper_tail})
         return result.content
-    except Exception as e:
-        return f"参考文献提取失败：{str(e)}"

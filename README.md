@@ -191,6 +191,8 @@ python -m pytest tests/ -v
 | `tests/test_session_isolation.py` | 多用户配置、论文和会话隔离 |
 | `tests/test_rag_pipeline.py` | PDF 加载、文本分块和 metadata |
 | `tests/test_api_endpoints.py` | API 可达性、参数校验和错误处理 |
+| `tests/test_tool_logic.py` | 工具业务校验（对比/缺口至少 2 篇、论文不存在提示） |
+| `tests/test_isolation_and_errors.py` | FAISS 会话隔离、TTL 淘汰、系统故障错误处理 |
 
 ## LLM 质量评估
 
@@ -206,7 +208,9 @@ python eval/eval.py --api-key sk-xxx --provider openai --model gpt-4o
 
 ### 会话隔离
 
-项目通过 `X-Session-ID` 识别用户会话，并使用 `ContextVar` 路由到独立的配置、论文列表和记忆对象，避免不同浏览器或用户之间互相污染数据。
+项目通过 `X-Session-ID` 识别用户会话，并使用 `ContextVar` 路由到独立的配置、论文列表、对话记忆和 FAISS 索引，避免不同浏览器或用户之间互相污染数据。向量索引同样按会话隔离，A 用户检索不会召回 B 用户上传的论文。
+
+会话数据存放在带闲置过期（TTL）与容量上限的缓存中（默认 2 小时无访问即淘汰），避免长期运行时内存被不断新建的会话占满。
 
 ### RAG 检索
 
@@ -220,7 +224,8 @@ python eval/eval.py --api-key sk-xxx --provider openai --model gpt-4o
 
 - `.env`、`uploads/`、`venv/`、缓存文件和 PDF 文件不会提交到 Git。
 - 若使用 OpenAI 兼容中转服务，请同时配置 `OPENAI_BASE_URL` 和对应 API Key。
-- FAISS 索引和会话状态主要保存在运行时内存中，服务重启后通常需要重新上传论文。
+- FAISS 索引和会话状态主要保存在运行时内存中，服务重启或会话闲置超时（默认 2 小时）后需要重新上传论文。
+- 本项目 **未内置身份验证或访问控制**，仅供本地开发与演示使用。若需公网部署，请自行在网关或应用层补充鉴权，否则任何人都可调用上传与检索接口（消耗你的 API Key 额度）。
 - Tavily Key 只在使用网络检索功能时需要。
 
 ## 许可证

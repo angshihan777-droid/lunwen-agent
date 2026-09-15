@@ -10,6 +10,7 @@ from langchain.tools import tool
 from config import get_llm
 from prompts.gap_prompt import GAP_PROMPT
 from tools.extract_tool import paper_texts
+from tools.errors import tool_error_guard
 
 
 @tool
@@ -40,11 +41,9 @@ def gap_tool(paper_ids: str) -> str:
     llm = get_llm()
     chain = GAP_PROMPT | llm
 
-    try:
+    with tool_error_guard("gap_tool"):
         result = chain.invoke({
             "paper_count": len(ids),
             "papers_info": papers_info,
         })
         return result.content
-    except Exception as e:
-        return f"缺口分析失败：{str(e)}"

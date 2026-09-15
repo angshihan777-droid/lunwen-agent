@@ -10,6 +10,7 @@ from langchain.tools import tool
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 from config import get_tavily_key
+from tools.errors import log_tool_failure
 
 
 @tool
@@ -22,7 +23,11 @@ def web_search_tool(query: str) -> str:
     """
     try:
         api_key = get_tavily_key()
+    except ValueError as e:
+        # 业务性问题：API Key 未设置，属用户可纠正，直接如实告知
+        return str(e)
 
+    try:
         # 创建 Tavily 搜索实例，返回最多 3 条结果
         search = TavilySearchResults(
             max_results=3,
@@ -44,8 +49,6 @@ def web_search_tool(query: str) -> str:
 
         return "\n\n---\n\n".join(formatted)
 
-    except ValueError as e:
-        # API Key 未设置
-        return str(e)
     except Exception as e:
-        return f"网络搜索失败：{str(e)}"
+        # 网络/接口等系统故障：记完整日志，返回可读提示
+        return log_tool_failure("web_search_tool", e)

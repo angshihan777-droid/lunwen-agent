@@ -32,3 +32,7 @@ uploads/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 评测数据集（体积大，按 eval/README.md 下载，不入库）
+qasper.tgz
+qasper_data/

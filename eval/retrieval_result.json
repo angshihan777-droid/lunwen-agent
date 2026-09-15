@@ -1,0 +1,16 @@
+{
+  "papers": 276,
+  "total_chunks": 12373,
+  "avg_chunks": 44.8,
+  "n_questions": 881,
+  "recall@1": 0.1952,
+  "recall@3": 0.4188,
+  "recall@5": 0.5709,
+  "mrr": 0.3239,
+  "avg_latency_ms": 14.74,
+  "top_k": 5,
+  "chunk_size": 800,
+  "chunk_overlap": 100,
+  "embedding_model": "all-MiniLM-L6-v2 (local)",
+  "dataset": "QASPER dev (allenai)"
+}

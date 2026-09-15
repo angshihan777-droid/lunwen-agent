@@ -6,6 +6,9 @@ paper_texts 是一个会话代理对象：所有对它的 dict 操作都路由�
 
 启动时 main.py 把演示论文写入 __default__ 会话；
 之后每个新用户会话首次访问时自动复制这些演示论文，保证体验一致。
+
+各会话的论文文本存放在带 TTL 的缓存中（见 session_store），闲置超时后自动淘汰；
+__default__ 会话承载演示论文，容量上限内长期保留即可，超时后下次访问会重新复制。
 """
 
 from langchain.tools import tool
@@ -13,18 +16,23 @@ from langchain.tools import tool
 from config import get_llm, _current_session
 from prompts.extract_prompt import EXTRACT_PROMPT, parser
 from schemas.paper_schema import PaperExtraction
+from session_store import STORE_LOCK, new_session_cache, touch
+from tools.errors import ToolError, tool_error_guard
 
 _DEFAULT_SESSION = "__default__"
-_all_paper_texts: dict = {}  # session_id -> {paper_id: full_text}
+_all_paper_texts = new_session_cache()  # session_id -> {paper_id: full_text}
 
 
 def _get_texts() -> dict:
     sid = _current_session.get()
-    if sid not in _all_paper_texts:
-        # 新会话：复制演示论文，让用户开箱即用
-        defaults = _all_paper_texts.get(_DEFAULT_SESSION, {})
-        _all_paper_texts[sid] = dict(defaults)
-    return _all_paper_texts[sid]
+    with STORE_LOCK:
+        texts = touch(_all_paper_texts, sid)
+        if texts is None:
+            # 新会话：复制演示论文，让用户开箱即用
+            defaults = _all_paper_texts.get(_DEFAULT_SESSION, {})
+            texts = dict(defaults)
+            _all_paper_texts[sid] = texts
+        return texts
 
 
 class _PaperTextsProxy:
@@ -63,9 +71,7 @@ def extract_tool(paper_id: str) -> str:
     llm   = get_llm()
     chain = EXTRACT_PROMPT | llm | parser
 
-    try:
+    with tool_error_guard("extract_tool"):
         result: PaperExtraction = chain.invoke({"paper_text": truncated})
         import json
         return json.dumps(result.model_dump(), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"提取失败：{str(e)}"

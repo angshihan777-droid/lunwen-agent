@@ -5,6 +5,9 @@ main.py — FastAPI 入口
 启动命令：uvicorn main:app --reload --port 8000
 """
 
+import asyncio
+import contextvars
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -24,6 +27,13 @@ from tools.compare_tool import compare_tool
 from tools.gap_tool import gap_tool
 from memory.session_memory import reset_memory
 from agents.research_agent import run_agent, run_chat
+
+# ── 日志配置 ───────────────────────────────
+# 工具/服务层的系统故障通过 logging 落盘，便于排查；不再静默吞掉。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 # ── 应用初始化 ──────────────────────────────────────────────
 app = FastAPI(
@@ -591,6 +601,10 @@ async def upload_paper(file: UploadFile = File(...)):
     2. 用 PyMuPDF 提取文本
     3. 分块并建立 FAISS 索引
     4. 返回 paper_id 供后续接口使用
+
+    解析与建索引是同步阻塞的重活，直接在事件循环里跑会卡住整个服务（其他请求排队）。
+    这里用线程池执行；由于 _current_session 是 ContextVar，线程默认拿不到当前会话，
+    故通过 contextvars.copy_context() 把会话上下文一并带入工作线程，保证隔离不丢。
     """
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="只支持 PDF 文件")
@@ -598,44 +612,59 @@ async def upload_paper(file: UploadFile = File(...)):
     # 用文件名（去掉 .pdf）作为 paper_id，保证可读性
     paper_id = Path(file.filename).stem
 
-    # 保存文件
-    file_path = UPLOAD_DIR / file.filename
+    # 读取上传内容（异步，不阻塞）后，把落盘与解析交给线程池
     content = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(content)
+    filename = file.filename
 
-    # 解析 PDF
-    full_text, page_count = load_pdf(str(file_path))
-    if not full_text.strip():
-        raise HTTPException(status_code=422, detail="PDF 中未能提取到文本（可能是扫描件）")
+    def _process() -> dict:
+        # 该函数在工作线程内、当前会话上下文下执行
+        file_path = UPLOAD_DIR / filename
+        with open(file_path, "wb") as f:
+            f.write(content)
 
-    # 存入全局文本字典（供 Tools 使用）
-    paper_texts[paper_id] = full_text
+        full_text, page_count = load_pdf(str(file_path))
+        if not full_text.strip():
+            raise HTTPException(status_code=422, detail="PDF 中未能提取到文本（可能是扫描件）")
 
-    # 分块并写入 FAISS 索引
-    # 若中转站不支持 embedding 接口，跳过索引但上传仍然成功
-    api_key  = session_config["llm_api_key"]
-    base_url = session_config.get("llm_base_url", "")
-    indexed  = False
-    index_note = ""
+        # 存入当前会话的文本存储（供 Tools 使用）
+        paper_texts[paper_id] = full_text
 
-    if api_key:
-        try:
-            documents = split_text(full_text, paper_id)
-            vs.add_documents(documents, api_key, base_url)
-            indexed = True
-        except Exception as e:
-            # 索引失败不阻断上传，记录原因告知前端
-            index_note = f"RAG 索引跳过（{type(e).__name__}：{str(e)[:100]}）"
+        # 分块并写入当前会话的 FAISS 索引
+        # 若中转站不支持 embedding 接口，跳过索引但上传仍然成功
+        api_key  = session_config["llm_api_key"]
+        base_url = session_config.get("llm_base_url", "")
+        indexed  = False
+        index_note = ""
+        if api_key:
+            try:
+                documents = split_text(full_text, paper_id)
+                vs.add_documents(documents, api_key, base_url)
+                indexed = True
+            except Exception as e:
+                # 索引失败不阻断上传：结构化记录原因，前端可见，且日志留痕
+                index_note = f"RAG 索引跳过（{type(e).__name__}：{str(e)[:100]}）"
+                logging.getLogger("lunwen_agent.upload").warning(
+                    "会话论文 %s 建索引失败：%s", paper_id, e
+                )
+        return {
+            "page_count": page_count,
+            "char_count": len(full_text),
+            "indexed": indexed,
+            "index_note": index_note,
+        }
+
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    info = await loop.run_in_executor(None, lambda: ctx.run(_process))
 
     return {
         "paper_id": paper_id,
-        "filename": file.filename,
-        "page_count": page_count,
-        "char_count": len(full_text),
-        "indexed": indexed,
-        "index_note": index_note,
-        "message": f"上传成功：{file.filename}，共 {page_count} 页",
+        "filename": filename,
+        "page_count": info["page_count"],
+        "char_count": info["char_count"],
+        "indexed": info["indexed"],
+        "index_note": info["index_note"],
+        "message": f"上传成功：{filename}，共 {info['page_count']} 页",
     }
 
 

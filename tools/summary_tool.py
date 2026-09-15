@@ -10,6 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from config import get_llm
 from tools.extract_tool import paper_texts  # 复用同一份论文文本存储
+from tools.errors import tool_error_guard
 
 SUMMARY_PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -37,8 +38,6 @@ def summary_tool(paper_id: str) -> str:
     llm = get_llm()
     chain = SUMMARY_PROMPT | llm
 
-    try:
+    with tool_error_guard("summary_tool"):
         result = chain.invoke({"paper_text": truncated})
         return result.content
-    except Exception as e:
-        return f"摘要生成失败：{str(e)}"
