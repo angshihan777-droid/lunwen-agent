@@ -610,13 +610,15 @@ async def upload_paper(file: UploadFile = File(...)):
     这里用线程池执行；由于 _current_session 是 ContextVar，线程默认拿不到当前会话，
     故通过 contextvars.copy_context() 把会话上下文一并带入工作线程，保证隔离不丢。
     """
-    if not file.filename.endswith(".pdf"):
+    # file.filename 完全由客户端控制，可能含 ../ 或绝对路径。
+    # 只取最后一段文件名，剥掉所有目录成分，防止写出 uploads/ 之外（路径穿越）。
+    filename = Path(file.filename or "").name
+    if not filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="只支持 PDF 文件")
 
     # 用文件名（去掉 .pdf）作为 paper_id，保证可读性
-    paper_id = Path(file.filename).stem
+    paper_id = Path(filename).stem
 
-    filename = file.filename
     file_path = UPLOAD_DIR / filename
 
     # 流式落盘：逐块从上传流读取写入磁盘，全程只驻留一个 chunk；
