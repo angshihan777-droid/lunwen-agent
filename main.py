@@ -59,6 +59,10 @@ async def session_middleware(request: Request, call_next):
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# 上传大小上限：整机内存有限，流式落盘时超过即中止，避免大文件打爆内存/磁盘
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+UPLOAD_CHUNK_BYTES = 1024 * 1024  # 每次从上传流读取的块大小
+
 # 挂载前端静态文件
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
@@ -612,16 +616,35 @@ async def upload_paper(file: UploadFile = File(...)):
     # 用文件名（去掉 .pdf）作为 paper_id，保证可读性
     paper_id = Path(file.filename).stem
 
-    # 读取上传内容（异步，不阻塞）后，把落盘与解析交给线程池
-    content = await file.read()
     filename = file.filename
+    file_path = UPLOAD_DIR / filename
+
+    # 流式落盘：逐块从上传流读取写入磁盘，全程只驻留一个 chunk；
+    # 累计超过 MAX_UPLOAD_BYTES 立即中止并删除半成品，避免大文件打爆内存/磁盘。
+    total = 0
+    try:
+        with open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    f.close()
+                    file_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过大小上限（{MAX_UPLOAD_BYTES // (1024 * 1024)} MB）",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
 
     def _process() -> dict:
-        # 该函数在工作线程内、当前会话上下文下执行
-        file_path = UPLOAD_DIR / filename
-        with open(file_path, "wb") as f:
-            f.write(content)
-
+        # 该函数在工作线程内、当前会话上下文下执行；文件已在上方流式落盘
         full_text, page_count = load_pdf(str(file_path))
         if not full_text.strip():
             raise HTTPException(status_code=422, detail="PDF 中未能提取到文本（可能是扫描件）")
